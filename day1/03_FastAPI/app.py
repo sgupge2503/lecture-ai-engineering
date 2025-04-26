@@ -13,7 +13,7 @@ from pyngrok import ngrok
 
 # --- 設定 ---
 # モデル名を設定
-MODEL_NAME = "google/gemma-2-2b-jpn-it"  # お好みのモデルに変更可能です
+MODEL_NAME = "google/gemma-2b-it" # お好みのモデルに変更可能です
 print(f"モデル名を設定: {MODEL_NAME}")
 
 # --- モデル設定クラス ---
@@ -199,6 +199,66 @@ async def generate_simple(request: SimpleGenerationRequest):
         print(f"シンプル応答生成中にエラーが発生しました: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"応答の生成中にエラーが発生しました: {str(e)}")
+
+# バッチサービングしたエンドポイント
+from typing import List
+
+class BatchGenerationRequest(BaseModel):
+    requests: List[SimpleGenerationRequest]
+
+class BatchGenerationResponse(BaseModel):
+    results: List[GenerationResponse]
+
+@app.post("/batch_generate", response_model=BatchGenerationResponse)
+async def batch_generate(batch_request: BatchGenerationRequest):
+    """複数のプロンプトに基づいてまとめてテキストを生成"""
+    global model
+
+    if model is None:
+        print("batch_generateエンドポイント: モデルが読み込まれていません。読み込みを試みます...")
+        load_model_task()
+        if model is None:
+            print("batch_generateエンドポイント: モデルの読み込みに失敗しました。")
+            raise HTTPException(status_code=503, detail="モデルが利用できません。後でもう一度お試しください。")
+
+    try:
+        start_time = time.time()
+        print(f"バッチリクエストを受信: 件数={len(batch_request.requests)}件")
+
+        responses = []
+
+        for idx, request in enumerate(batch_request.requests):
+            print(f"リクエスト{idx+1}: prompt={request.prompt[:100]}..., max_new_tokens={request.max_new_tokens}")
+
+            outputs = model(
+                request.prompt,
+                max_new_tokens=request.max_new_tokens,
+                do_sample=request.do_sample,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            )
+            print(f"リクエスト{idx+1}: モデル推論完了")
+
+            assistant_response = extract_assistant_response(outputs, request.prompt)
+            print(f"リクエスト{idx+1}: 抽出された応答: {assistant_response[:100]}...")
+
+            response_time = time.time() - start_time
+            responses.append(GenerationResponse(
+                generated_text=assistant_response,
+                response_time=response_time
+            ))
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        print(f"バッチ応答生成時間: {total_time:.2f}秒")
+
+        return BatchGenerationResponse(results=responses)
+
+    except Exception as e:
+        print(f"バッチ応答生成中にエラーが発生しました: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"バッチ応答生成中にエラーが発生しました: {str(e)}")
+
 
 def load_model_task():
     """モデルを読み込むバックグラウンドタスク"""
